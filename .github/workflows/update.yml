@@ -1,26 +1,33 @@
 name: Scraping Quotidien 6h
 on:
   schedule:
-    - cron: '0 5 * * *' # 5h UTC = 6h ou 7h en France
-  workflow_dispatch: # Pour tester manuellement
+    - cron: '0 5 * * *'
+  workflow_dispatch:
 
 jobs:
   scraping:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v3
+        with:
+          fetch-depth: 0 # Récupère tout l'historique pour éviter les erreurs de push
+
       - name: Setup Python
         uses: actions/setup-python@v4
         with:
           python-version: '3.9'
+
       - name: Install dependencies
         run: pip install requests beautifulsoup4 pandas
+
       - name: Run scraping
         run: python seances.py
+
       - name: Save results
         run: |
           git config --global user.name 'CineBot'
           git config --global user.email 'bot@cine.com'
+          git pull origin main # On récupère les changements avant de pousser
           git add allocine_scraping_results.csv
           git commit -m "MAJ séances du jour" || exit 0
-          git push
+          git push origin main
