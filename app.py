@@ -2,77 +2,106 @@ import streamlit as st
 import pandas as pd
 import requests
 from bs4 import BeautifulSoup
-from datetime import datetime
+from datetime import datetime, timedelta
 
-# --- CONFIGURATION DE LA PAGE ---
-st.set_page_config(page_title="Ciné Montpellier", page_icon="🎬", layout="wide")
+# --- CONFIGURATION ---
+st.set_page_config(page_title="Ciné Montpellier 7J", page_icon="🎬", layout="wide")
 
-# --- FONCTIONS DE SCRAPING (VOTRE CODE) ---
+# Liste des cinémas (IDs Allociné)
+THEATERS = {
+    "Gaumont Comédie": "P0702",
+    "Gaumont Multiplexe": "P0076",
+    "CGR Lattes": "P7647",
+    "Le Royal": "P0187",
+    "Diagonal": "W3408"
+}
+
 headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36..."}
 
-@st.cache_data(ttl=3600)  # Mise en cache pendant 1h pour éviter de bloquer votre IP
-def get_all_seances():
-    urls = [
-        "https://www.allocine.fr/seance/salle_gen_csalle=P0702.html",
-        "https://www.allocine.fr/seance/salle_gen_csalle=P0076.html",
-        "https://www.allocine.fr/seance/salle_gen_csalle=P7647.html",
-        "https://www.allocine.fr/seance/salle_gen_csalle=P0187.html",
-        "https://www.allocine.fr/seance/salle_gen_csalle=W3408.html"
-    ]
-    
+# --- LOGIQUE DE SCRAPING ---
+@st.cache_data(ttl=3600)
+def get_seances_7_jours():
     all_data = []
-    for url in urls:
-        response = requests.get(url, headers=headers)
-        if response.status_code != 200: continue
-        
-        soup = BeautifulSoup(response.content, 'html.parser')
-        cinema_elem = soup.select_one("div.header-theater-title")
-        cinema_name = cinema_elem.get_text(strip=True).replace(" Montpellier", "").replace(" - IMAX", "") if cinema_elem else "Inconnu"
-
-        for seance in soup.select("div.entity-card"):
-            titre = seance.select_one("a.meta-title-link").get_text(strip=True)
-            for version in seance.select("div.showtimes-version"):
-                v_raw = version.select_one("div.text").get_text(strip=True) if version.select_one("div.text") else "N/A"
-                # Nettoyage rapide de la langue
-                langue = v_raw[3:] if len(v_raw) > 3 else v_raw
-                if "-" in langue: langue = langue.split("-")[-1].strip()
-
-                for horaire in version.select("div.showtimes-hour-block"):
-                    heure = horaire.get_text(strip=True)[:5] # Format HH:MM
-                    all_data.append({
-                        "Heure": heure,
-                        "Film": titre,
-                        "Cinéma": cinema_name,
-                        "Langue": langue
-                    })
+    today = datetime.now()
     
-    df = pd.DataFrame(all_data)
-    return df.sort_values("Heure")
+    # On boucle sur les 7 prochains jours
+    for i in range(7):
+        date_target = today + timedelta(days=i)
+        date_str = date_target.strftime("%Y-%m-%d")
+        display_date = date_target.strftime("%A %d %b") # Ex: Lundi 25 Oct
+        
+        for cine_name, cine_id in THEATERS.items():
+            # URL formatée pour la date spécifique
+            url = f"https://www.allocine.fr/seance/salle_gen_csalle={cine_id}/?date={date_str}"
+            
+            response = requests.get(url, headers=headers)
+            if response.status_code != 200: continue
+            
+            soup = BeautifulSoup(response.content, 'html.parser')
+            
+            for card in soup.select("div.entity-card"):
+                titre = card.select_one("a.meta-title-link").get_text(strip=True)
+                
+                for version in card.select("div.showtimes-version"):
+                    v_raw = version.select_one("div.text").get_text(strip=True) if version.select_one("div.text") else "VF"
+                    langue = "VOST" if "VOST" in v_raw.upper() else "VF"
+                    
+                    for horaire in version.select("div.showtimes-hour-block"):
+                        heure = horaire.get_text(strip=True)[:5]
+                        all_data.append({
+                            "Jour": display_date,
+                            "Heure": heure,
+                            "Film": titre,
+                            "Cinéma": cine_name,
+                            "Langue": langue,
+                            "Sortie": date_str # Pour le tri technique
+                        })
+    
+    return pd.DataFrame(all_data)
 
-# --- INTERFACE UTILISATEUR ---
-st.title("🎬 Séances Ciné Montpellier")
+# --- INTERFACE ---
+st.title("🎬 Mon Programme Ciné (7 jours)")
 
-with st.spinner('Mise à jour des séances...'):
-    df = get_all_seances()
+with st.spinner('Récupération des séances de la semaine...'):
+    df_global = get_seances_7_jours()
 
-# --- FILTRES ---
-col1, col2 = st.columns(2)
-with col1:
-    search_film = st.text_input("🔍 Rechercher un film", "")
-with col2:
-    selected_cine = st.multiselect("📍 Filtrer par cinéma", options=sorted(df["Cinéma"].unique()))
+# --- FILTRES DANS LA BARRE LATÉRALE ---
+st.sidebar.header("Options de recherche")
 
-# Application des filtres
-mask = df["Film"].str.contains(search_film, case=False)
-if selected_cine:
-    mask = mask & df["Cinéma"].isin(selected_cine)
+# 1. Filtre par Jour
+jours_disponibles = df_global["Jour"].unique()
+selected_day = st.sidebar.selectbox("📅 Choisir le jour", jours_disponibles)
 
-filtered_df = df[mask]
+# 2. Recherche de Film (Auto-complétion)
+films_dispo = sorted(df_global[df_global["Jour"] == selected_day]["Film"].unique())
+selected_film = st.sidebar.selectbox("🔍 Chercher un film", ["Tous les films"] + films_dispo)
+
+# 3. Filtre par Cinéma
+cines_dispo = sorted(df_global["Cinéma"].unique())
+selected_cines = st.sidebar.multiselect("📍 Cinémas", cines_dispo, default=cines_dispo)
+
+# --- FILTRAGE DES DONNÉES ---
+df_filtered = df_global[df_global["Jour"] == selected_day]
+
+if selected_film != "Tous les films":
+    df_filtered = df_filtered[df_filtered["Film"] == selected_film]
+
+if selected_cines:
+    df_filtered = df_filtered[df_filtered["Cinéma"].isin(selected_cines)]
 
 # --- AFFICHAGE ---
-if not filtered_df.empty:
-    st.dataframe(filtered_df, use_container_width=True, hide_index=True)
+if not df_filtered.empty:
+    # On affiche un résumé sympa
+    st.subheader(f"Séances pour le {selected_day}")
+    
+    # Mise en forme du tableau pour mobile
+    st.dataframe(
+        df_filtered[["Heure", "Film", "Cinéma", "Langue"]].sort_values("Heure"),
+        use_container_width=True,
+        hide_index=True
+    )
 else:
-    st.warning("Aucune séance ne correspond à votre recherche.")
+    st.info("Aucune séance trouvée avec ces filtres.")
 
-st.caption(f"Dernière mise à jour : {datetime.now().strftime('%H:%M')}")
+st.sidebar.markdown("---")
+st.sidebar.caption(f"Dernière mise à jour : {datetime.now().strftime('%H:%M')}")
