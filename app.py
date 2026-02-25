@@ -3,12 +3,11 @@ import pandas as pd
 import requests
 from bs4 import BeautifulSoup
 from datetime import datetime
-import time
 
 # --- CONFIGURATION ---
 st.set_page_config(page_title="Ciné Montpellier", page_icon="🎬", layout="wide")
 
-# Liste des URLs (votre liste complète pour couvrir toutes les salles)
+# Liste exhaustive de vos URLs
 START_URLS = [
     "https://www.allocine.fr/seance/salle_gen_csalle=P0702.html",
     "https://www.allocine.fr/seance/salle_gen_csalle=P0076.html",
@@ -24,10 +23,9 @@ START_URLS = [
 
 headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"}
 
-@st.cache_data(ttl=1800) # Mise à jour toutes les 30 min
-def get_seances_du_jour():
+@st.cache_data(ttl=1800) # Mise à jour toutes les 30 minutes
+def scrape_all_cinemas():
     all_data = []
-    
     for url in START_URLS:
         try:
             response = requests.get(url, headers=headers, timeout=10)
@@ -35,7 +33,7 @@ def get_seances_du_jour():
             
             soup = BeautifulSoup(response.content, 'html.parser')
             
-            # Nom du Cinéma
+            # Extraction du nom du cinéma
             cinema_elem = soup.select_one("div.header-theater-title")
             cinema_name = cinema_elem.get_text(strip=True).replace(" Montpellier", "").replace(" - IMAX", "") if cinema_elem else "Inconnu"
 
@@ -43,11 +41,11 @@ def get_seances_du_jour():
                 titre_elem = card.select_one("a.meta-title-link")
                 if not titre_elem: continue
                 titre = titre_elem.get_text(strip=True)
-                
+
                 for version in card.select("div.showtimes-version"):
                     v_raw = version.select_one("div.text").get_text(strip=True) if version.select_one("div.text") else "VF"
                     langue = "VOST" if "VOST" in v_raw.upper() else "VF"
-                    
+
                     for horaire in version.select(".showtimes-hour-block"):
                         h_val = horaire.get_text(strip=True)[:5]
                         if ":" in h_val:
@@ -60,49 +58,52 @@ def get_seances_du_jour():
         except:
             continue
     
-    if not all_data:
-        return pd.DataFrame(columns=["Heure", "Film", "Cinéma", "Langue"])
-    
-    return pd.DataFrame(all_data).drop_duplicates()
+    return pd.DataFrame(all_data).drop_duplicates() if all_data else pd.DataFrame(columns=["Heure", "Film", "Cinéma", "Langue"])
 
 # --- INTERFACE ---
 st.title("🎬 Séances du jour à Montpellier")
 
-with st.spinner('Récupération des séances...'):
-    df = get_seances_du_jour()
+with st.spinner('Chargement des séances...'):
+    df = scrape_all_cinemas()
 
 if df.empty:
-    st.error("Aucune donnée disponible. Réessayez plus tard.")
+    st.warning("Aucune séance trouvée ou erreur de connexion avec Allociné.")
 else:
-    # --- FILTRES BARRE LATÉRALE ---
-    st.sidebar.header("Options")
+    # --- BARRE LATÉRALE (FILTRES) ---
+    st.sidebar.header("Filtres")
     
-    # 1. Recherche par film avec auto-complétion
-    liste_films = sorted(df["Film"].unique())
-    selected_film = st.sidebar.selectbox("🔍 Chercher un film", ["Tous les films"] + liste_films)
+    # 1. Recherche prédictive par film
+    liste_films = sorted(df["Film"].unique().tolist())
+    selected_film = st.sidebar.selectbox("🔍 Choisir un film", ["Tous les films"] + liste_films)
 
-    # 2. Filtre par cinéma
-    liste_cines = sorted(df["Cinéma"].unique())
-    selected_cines = st.sidebar.multiselect("📍 Filtrer par cinéma", liste_cines, default=liste_cines)
+    # 2. Multi-sélection des cinémas
+    liste_cines = sorted(df["Cinéma"].unique().tolist())
+    selected_cines = st.sidebar.multiselect("📍 Cinémas", liste_cines, default=liste_cines)
 
-    # --- LOGIQUE DE FILTRAGE ---
-    mask = pd.Series([True] * len(df))
+    # --- FILTRAGE DES DONNÉES ---
+    # On crée une copie pour ne pas corrompre le DataFrame original
+    df_display = df.copy()
     
     if selected_film != "Tous les films":
-        mask &= (df["Film"] == selected_film)
+        df_display = df_display[df_display["Film"] == selected_film]
     
     if selected_cines:
-        mask &= (df["Cinéma"].isin(selected_cines))
+        df_display = df_display[df_display["Cinéma"].isin(selected_cines)]
 
-    filtered_df = df[mask].sort_values("Heure")
+    # Tri final par heure
+    df_display = df_display.sort_values("Heure")
 
     # --- AFFICHAGE ---
-    st.subheader(f"Trouvé : {len(filtered_df)} séance(s)")
-    st.dataframe(
-        filtered_df[["Heure", "Film", "Cinéma", "Langue"]], 
-        use_container_width=True, 
-        hide_index=True
-    )
+    st.subheader(f"{len(df_display)} séances disponibles")
+    
+    if not df_display.empty:
+        st.dataframe(
+            df_display, 
+            use_container_width=True, 
+            hide_index=True
+        )
+    else:
+        st.info("Aucun résultat pour ces filtres.")
 
 st.sidebar.markdown("---")
-st.sidebar.caption(f"Dernière mise à jour : {datetime.now().strftime('%H:%M')}")
+st.sidebar.caption(f"Mise à jour : {datetime.now().strftime('%H:%M')}")
